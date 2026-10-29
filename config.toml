@@ -1,0 +1,31 @@
+# deckd — Configuração
+# Edite este arquivo e as mudanças serão aplicadas no próximo ciclo automáticamente.
+
+# Intervalo padrão entre notificações, em segundos.
+# Exemplos: 60 = 1 minuto | 300 = 5 minutos | 3600 = 1 hora
+interval = 300
+
+# Tempo que a notificação fica visível na tela, em milissegundos. (0 = não expira)
+expire_time = 8000
+
+# Ícone exibido em todas as notificações (nome de ícone do sistema ou caminho absoluto)
+icon = "dialog-information"
+
+# Ordem de exibição dos cartões: "sequential" (em ordem) ou "random" (aleatória)
+order = "sequential"
+
+# ─── Cartões ──────────────────────────────────────────────────────────────────
+# Adicione quantos cartões quiser usando blocos [[cards]].
+# Cada cartão precisa apenas de "title" e "body".
+
+[[cards]]
+title = "Beba água 💧"
+body  = "Lembre-se de se hidratar!"
+
+[[cards]]
+title = "Pausa ativa 🧘"
+body  = "Levante-se e alongue por 2 minutos."
+
+[[cards]]
+title = "Revisão do dia 📋"
+body  = "Verifique sua lista de tarefas."
