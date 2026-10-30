@@ -9,6 +9,7 @@ Uso:
     deckd --config PATH # usa um arquivo de configuração alternativo
 """
 
+import abc
 import argparse
 import logging
 import random
@@ -17,11 +18,23 @@ import sys
 import time
 import tomllib
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 
-# ─── Caminhos padrão ──────────────────────────────────────────────────────────
+# ─── Constantes ───────────────────────────────────────────────────────────────
 
 DEFAULT_CONFIG = Path.home() / ".config" / "deckd" / "config.toml"
+_RETRY_DELAY_S = 2  
+_MAX_RETRIES = 2
+
+
+# ─── Tipos enumerados ─────────────────────────────────────────────────────────
+
+
+class OrderMode(str, Enum):                  
+    """Modos de ordenação dos cartões."""
+    SEQUENTIAL = "sequential"
+    RANDOM = "random"
 
 
 # ─── Modelos de dados ─────────────────────────────────────────────────────────
@@ -38,7 +51,7 @@ class Config:
     interval: int = 300
     expire_time: int = 8000
     icon: str = "dialog-information"
-    order: str = "sequential"
+    order: OrderMode = OrderMode.SEQUENTIAL
     cards: list[Card] = field(default_factory=list)
 
 
@@ -58,68 +71,21 @@ def load_config(path: Path) -> Config:
         except KeyError as e:
             logging.warning(f"Cartão #{i+1} ignorado: campo obrigatório ausente: {e}")
 
-    return Config(cards=cards, **{k: v for k, v in data.items() if k in Config.__dataclass_fields__})
+    # Converte a string de ordem para o Enum, mantendo o padrão em caso de valor inválido
+    raw_order = data.pop("order", OrderMode.SEQUENTIAL.value)
+    try:
+        order = OrderMode(raw_order)
+    except ValueError:
+        logging.warning(f"Valor de 'order' inválido: '{raw_order}'. Usando 'sequential'.")
+        order = OrderMode.SEQUENTIAL
+
+    known_fields = {k for k in Config.__dataclass_fields__ if k not in ("order", "cards")}
+    extra = {k: v for k, v in data.items() if k in known_fields}
+    return Config(cards=cards, order=order, **extra)
 
 
-# ─── Notificação ──────────────────────────────────────────────────────────────
-
-
-def send_notification(card: Card, cfg: Config, retry: bool = True) -> bool:
-    """Envia uma notificação via notify-send."""
-    cmd = [
-        "notify-send",
-        "--app-name=deckd",
-        f"--expire-time={cfg.expire_time}",
-        f"--icon={cfg.icon}",
-        card.title,
-        card.body,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        if retry:
-            time.sleep(2)
-            return send_notification(card, cfg, retry=False)
-        logging.error(f"Erro ao enviar notificação: {result.stderr.strip()}")
-        return False
-    return True
-
-
-# ─── Seleção de cartão ────────────────────────────────────────────────────────
-
-
-class CardSelector:
-    """Gerencia a seleção sequencial ou aleatória de cartões."""
-
-    def __init__(self, cards: list[Card], order: str) -> None:
-        self._cards = cards
-        self._order = order
-        self._index = 0
-
-    def update(self, cards: list[Card], order: str) -> None:
-        """Atualiza a lista sem resetar o índice se possível."""
-        if order != self._order:
-            self._order = order
-            self._index = 0
-        # Mantém índice válido após remoção de cartões
-        if self._index >= len(cards):
-            self._index = 0
-        self._cards = cards
-
-    def next(self) -> Card:
-        if self._order == "random":
-            return random.choice(self._cards)
-        card = self._cards[self._index % len(self._cards)]
-        self._index += 1
-        return card
-
-
-# ─── Loop principal ───────────────────────────────────────────────────────────
-
-
-def run_daemon(config_path: Path) -> None:
-    """Loop principal do daemon."""
-    logging.info(f"Iniciando deckd. Config: {config_path}")
-
+def _load_initial_config(config_path: Path) -> Config:   
+    """Carrega a config inicial; encerra o processo em caso de falha fatal."""
     try:
         cfg = load_config(config_path)
     except FileNotFoundError:
@@ -133,40 +99,165 @@ def run_daemon(config_path: Path) -> None:
         logging.error("Nenhum cartão encontrado na configuração. Encerrando.")
         sys.exit(1)
 
-    selector = CardSelector(cfg.cards, cfg.order)
-    logging.info(f"{len(cfg.cards)} cartão(s) carregado(s). Ordem: {cfg.order}. Intervalo: {cfg.interval}s.")
+    return cfg
+
+
+# ─── Notificação ──────────────────────────────────────────────────────────────
+
+
+@dataclass
+class NotificationRequest:                  
+    """Agrupa os dados necessários para disparar uma notificação."""
+    card: Card
+    expire_time: int
+    icon: str
+
+    @staticmethod
+    def from_config(card: Card, cfg: Config) -> "NotificationRequest":
+        return NotificationRequest(
+            card=card,
+            expire_time=cfg.expire_time,
+            icon=cfg.icon,
+        )
+
+
+def send_notification(request: NotificationRequest) -> bool:   
+    """Envia uma notificação via notify-send com até _MAX_RETRIES tentativas."""
+    cmd = [
+        "notify-send",
+        "--app-name=deckd",
+        f"--expire-time={request.expire_time}",
+        f"--icon={request.icon}",
+        request.card.title,
+        request.card.body,
+    ]
+    for attempt in range(_MAX_RETRIES):     
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            return True
+        if attempt < _MAX_RETRIES - 1:
+            time.sleep(_RETRY_DELAY_S)
+
+    logging.error(f"Erro ao enviar notificação: {result.stderr.strip()}")
+    return False
+
+
+# ─── Seleção de cartão ────────────────────────────────────────────────────────
+
+
+class CardSelector(abc.ABC):                   
+    """Interface de seleção de cartões."""
+
+    @abc.abstractmethod
+    def next(self) -> Card:
+        """Retorna o próximo cartão a exibir."""
+
+    @abc.abstractmethod
+    def update(self, cards: list[Card]) -> None:
+        """Atualiza a lista de cartões disponíveis."""
+
+
+class SequentialSelector(CardSelector):        
+    """Seleciona cartões em ordem cíclica."""
+
+    def __init__(self, cards: list[Card]) -> None:
+        self._cards = cards
+        self._index = 0
+
+    def next(self) -> Card:
+        card = self._cards[self._index % len(self._cards)]
+        self._index += 1
+        return card
+
+    def update(self, cards: list[Card]) -> None:
+        if self._index >= len(cards):
+            self._index = 0
+        self._cards = cards
+
+
+class RandomSelector(CardSelector):            
+    """Seleciona cartões aleatoriamente."""
+
+    def __init__(self, cards: list[Card]) -> None:
+        self._cards = cards
+
+    def next(self) -> Card:
+        return random.choice(self._cards)
+
+    def update(self, cards: list[Card]) -> None:
+        self._cards = cards
+
+
+def make_selector(cards: list[Card], order: OrderMode) -> CardSelector:   
+    """Instancia o seletor correto para o modo de ordem informado."""
+    if order == OrderMode.RANDOM:
+        return RandomSelector(cards)
+    return SequentialSelector(cards)
+
+
+# ─── Loop principal ───────────────────────────────────────────────────────────
+
+
+def _try_hot_reload(config_path: Path, selector: CardSelector, cfg: Config) -> Config:
+    """Tenta recarregar a config; em caso de falha, mantém a config anterior."""  
+    try:
+        new_cfg = load_config(config_path)
+        if not new_cfg.cards:
+            logging.warning("Config recarregada sem cartões válidos. Mantendo anterior.")
+            return cfg
+        if new_cfg.order != cfg.order:
+            return new_cfg  # troca de modo → o daemon recria o seletor no próximo ciclo
+        selector.update(new_cfg.cards)
+        return new_cfg
+    except Exception as e:
+        logging.warning(f"Falha ao recarregar config: {e}. Mantendo anterior.")
+        return cfg
+
+
+def run_daemon(config_path: Path) -> None:
+    """Loop principal do daemon."""
+    logging.info(f"Iniciando deckd. Config: {config_path}")
+
+    cfg = _load_initial_config(config_path)
+    selector = make_selector(cfg.cards, cfg.order)
+    logging.info(
+        f"{len(cfg.cards)} cartão(s) carregado(s). "
+        f"Ordem: {cfg.order.value}. Intervalo: {cfg.interval}s."
+    )
 
     while True:
         card = selector.next()
         logging.info(f"Exibindo: '{card.title}'")
-        send_notification(card, cfg)
+        send_notification(NotificationRequest.from_config(card, cfg))
 
         time.sleep(cfg.interval)
 
-        # Hot-reload: recarrega a config a cada ciclo
-        try:
-            new_cfg = load_config(config_path)
-            if new_cfg.cards:
-                selector.update(new_cfg.cards, new_cfg.order)
-                cfg = new_cfg
-            else:
-                logging.warning("Config recarregada sem cartões válidos. Mantendo anterior.")
-        except Exception as e:
-            logging.warning(f"Falha ao recarregar config: {e}. Mantendo anterior.")
+        prev_order = cfg.order
+        cfg = _try_hot_reload(config_path, selector, cfg)
+
+        # Recria o seletor se o modo de ordem mudou
+        if cfg.order != prev_order:
+            selector = make_selector(cfg.cards, cfg.order)
+            logging.info(f"Modo de ordem alterado para: {cfg.order.value}")
 
 
 # ─── Comandos auxiliares ──────────────────────────────────────────────────────
 
 
-def cmd_test(config_path: Path) -> None:
-    """Envia o primeiro cartão imediatamente e sai."""
-    cfg = load_config(config_path)
+def _require_cards(cfg: Config) -> None:     
+    """Encerra o processo se não houver cartões carregados."""
     if not cfg.cards:
         print("Nenhum cartão encontrado.", file=sys.stderr)
         sys.exit(1)
+
+
+def cmd_test(config_path: Path) -> None:
+    """Envia o primeiro cartão imediatamente e sai."""
+    cfg = load_config(config_path)
+    _require_cards(cfg)
     card = cfg.cards[0]
     print(f"Enviando cartão de teste: '{card.title}'")
-    send_notification(card, cfg)
+    send_notification(NotificationRequest.from_config(card, cfg))
 
 
 def cmd_list(config_path: Path) -> None:
@@ -180,7 +271,7 @@ def cmd_list(config_path: Path) -> None:
     for i, card in enumerate(cfg.cards, 1):
         body_preview = card.body[:35] + "…" if len(card.body) > 35 else card.body
         print(f"{i:<4} {card.title:<30} {body_preview}")
-    print(f"\nTotal: {len(cfg.cards)} cartão(s) | Intervalo: {cfg.interval}s | Ordem: {cfg.order}")
+    print(f"\nTotal: {len(cfg.cards)} cartão(s) | Intervalo: {cfg.interval}s | Ordem: {cfg.order.value}")
 
 
 # ─── Ponto de entrada ─────────────────────────────────────────────────────────
