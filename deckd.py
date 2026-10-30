@@ -64,7 +64,7 @@ def load_config(path: Path) -> Config:
 # ─── Notificação ──────────────────────────────────────────────────────────────
 
 
-def send_notification(card: Card, cfg: Config) -> None:
+def send_notification(card: Card, cfg: Config, retry: bool = True) -> bool:
     """Envia uma notificação via notify-send."""
     cmd = [
         "notify-send",
@@ -76,7 +76,12 @@ def send_notification(card: Card, cfg: Config) -> None:
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
+        if retry:
+            time.sleep(2)
+            return send_notification(card, cfg, retry=False)
         logging.error(f"Erro ao enviar notificação: {result.stderr.strip()}")
+        return False
+    return True
 
 
 # ─── Seleção de cartão ────────────────────────────────────────────────────────

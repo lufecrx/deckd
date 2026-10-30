@@ -30,8 +30,9 @@ cat > "$SYSTEMD_DIR/deckd.service" << EOF
 [Unit]
 Description=deckd — notificações periódicas de cartões
 Documentation=https://github.com/deckd
+PartOf=graphical-session.target
 After=graphical-session.target
-Wants=graphical-session.target
+Requisite=graphical-session.target
 
 [Service]
 ExecStart=$BIN_DIR/deckd
@@ -41,13 +42,13 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
 EOF
 echo "  ✔ Serviço systemd criado em $SYSTEMD_DIR/deckd.service"
 
 # Habilita e inicia o serviço
 systemctl --user daemon-reload
-systemctl --user enable --now deckd.service
+systemctl --user reenable --now deckd.service 2>/dev/null || systemctl --user enable --now deckd.service
 echo "  ✔ Serviço habilitado e iniciado"
 
 echo ""
