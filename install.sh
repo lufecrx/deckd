@@ -29,7 +29,7 @@ fi
 cat > "$SYSTEMD_DIR/deckd.service" << EOF
 [Unit]
 Description=deckd — notificações periódicas de cartões
-Documentation=https://github.com/deckd
+Documentation=https://github.com/lufecrx/deckd
 PartOf=graphical-session.target
 After=graphical-session.target
 Requisite=graphical-session.target
