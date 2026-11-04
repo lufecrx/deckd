@@ -49,6 +49,9 @@ body  = "Levante-se e alongue por 2 minutos."
 ## Comandos úteis
 
 ```bash
+# Adicionar um novo cartão
+deckd -n "Beba água 💧" "Lembre-se de se hidratar!"
+
 # Listar cartões configurados
 deckd --list
 

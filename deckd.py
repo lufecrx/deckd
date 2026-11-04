@@ -6,11 +6,13 @@ Uso:
     deckd               # inicia o daemon normalmente
     deckd --test        # envia o próximo cartão imediatamente e sai
     deckd --list        # lista todos os cartões configurados e sai
+    deckd -n TITULO CORPO # adiciona um novo cartão à configuração e sai
     deckd --config PATH # usa um arquivo de configuração alternativo
 """
 
 import abc
 import argparse
+import json
 import logging
 import random
 import subprocess
@@ -274,6 +276,58 @@ def cmd_list(config_path: Path) -> None:
     print(f"\nTotal: {len(cfg.cards)} cartão(s) | Intervalo: {cfg.interval}s | Ordem: {cfg.order.value}")
 
 
+def cmd_add(config_path: Path, title: str, body: str) -> None:
+    """Adiciona um novo cartão ao arquivo de configuração."""
+    title = title.strip()
+    body = body.strip()
+
+    if not title:
+        print("Erro: o título do cartão não pode ser vazio.", file=sys.stderr)
+        sys.exit(1)
+    if not body:
+        print("Erro: o corpo do cartão não pode ser vazio.", file=sys.stderr)
+        sys.exit(1)
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not config_path.exists():
+        header = (
+            "# deckd — Configuração\n"
+            "interval = 300\n"
+            "expire_time = 8000\n"
+            'icon = "dialog-information"\n'
+            'order = "sequential"\n\n'
+        )
+        config_path.write_text(header, encoding="utf-8")
+
+    content = config_path.read_text(encoding="utf-8")
+    prefix = ""
+    if content and not content.endswith("\n\n"):
+        prefix = "\n" if content.endswith("\n") else "\n\n"
+
+    escaped_title = json.dumps(title, ensure_ascii=False)
+    escaped_body = json.dumps(body, ensure_ascii=False)
+
+    card_block = (
+        f"{prefix}[[cards]]\n"
+        f"title = {escaped_title}\n"
+        f"body  = {escaped_body}\n"
+    )
+
+    with open(config_path, "a", encoding="utf-8") as f:
+        f.write(card_block)
+
+    try:
+        cfg = load_config(config_path)
+    except Exception as e:
+        print(f"Aviso: cartão gravado, mas ocorreu um erro ao validar a configuração: {e}", file=sys.stderr)
+        return
+
+    print(f"✔ Cartão adicionado com sucesso a {config_path}")
+    print(f"  Título: {title}")
+    print(f"  Total:  {len(cfg.cards)} cartão(s) configurado(s)")
+
+
 # ─── Ponto de entrada ─────────────────────────────────────────────────────────
 
 
@@ -290,15 +344,23 @@ def main() -> None:
         default=DEFAULT_CONFIG,
         help=f"Caminho para o arquivo de configuração (padrão: {DEFAULT_CONFIG})",
     )
-    parser.add_argument(
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument(
         "--test",
         action="store_true",
         help="Envia o primeiro cartão imediatamente e sai",
     )
-    parser.add_argument(
+    actions.add_argument(
         "--list",
         action="store_true",
         help="Lista os cartões configurados e sai",
+    )
+    actions.add_argument(
+        "-n",
+        "--new",
+        nargs=2,
+        metavar=("TITULO", "CORPO"),
+        help="Adiciona um novo cartão à configuração e sai",
     )
     parser.add_argument(
         "--log-level",
@@ -314,7 +376,9 @@ def main() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    if args.test:
+    if args.new:
+        cmd_add(args.config, args.new[0], args.new[1])
+    elif args.test:
         cmd_test(args.config)
     elif args.list:
         cmd_list(args.config)
